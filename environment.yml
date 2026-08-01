@@ -1,0 +1,9 @@
+name: ramalhinho-2021-reproduction
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - numpy>=1.26
+  - pillow>=10
+  - pytest>=8
+  - pip
