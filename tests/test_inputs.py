@@ -8,6 +8,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from .test_organs import polygon, write_annotation_tar
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REGISTRATION_MODULE = PROJECT_ROOT / "registration" / "2021.py"
@@ -19,6 +21,7 @@ def gallery_record(slice_id: str = "slice-001") -> dict:
         "slice_id": slice_id,
         "status": "gallery",
         "organ": "liver",
+        "organ_labels": ["liver"],
         "center_world": [10.0, 20.0, 30.0],
         "u_axis_world": [1.0, 0.0, 0.0],
         "v_axis_world": [0.0, 1.0, 0.0],
@@ -55,6 +58,7 @@ def test_load_gallery_database_recovers_features_pose_and_source_record(tmp_path
     np.testing.assert_allclose(vector.pose.surface_point, [10.0, 20.0, 30.0])
     assert gallery.database.keys() == {"artery:1_vein:1"}
     assert gallery.records_by_pose_id[id(vector.pose)] == record
+    assert gallery.organ_labels_by_pose_id[id(vector.pose)] == ("liver",)
     assert gallery.gallery_root == manifest.parent
     assert gallery.max_rotation_error < 1e-12
 
@@ -87,6 +91,7 @@ def test_load_eus_queries_sorts_numeric_ids_and_preserves_unindexed(tmp_path: Pa
             "slice_id": f"{frame_id}_cropped",
             "status": status,
             "features": features,
+            "organ_labels": ["liver"],
             "patient_world_pose": False,
         }
         write_jsonl(
@@ -99,6 +104,8 @@ def test_load_eus_queries_sorts_numeric_ids_and_preserves_unindexed(tmp_path: Pa
     assert queries[0].feature_vector is None
     assert queries[0].status == "unindexed"
     assert queries[1].feature_vector.triplets[0].label == "vein"
+    assert queries[1].organ_labels == ("liver",)
+    assert queries[1].organ_label_source == "jsonl"
 
 
 def test_timestamp_csv_requires_all_requested_frames_and_increasing_values(tmp_path: Path):
@@ -122,6 +129,89 @@ def test_timestamp_csv_requires_all_requested_frames_and_increasing_values(tmp_p
         inputs.timestamps_for_frames(
             ["frame_00000002", "frame_00000001"], timestamps
         )
+
+
+def test_load_eus_queries_falls_back_to_active_organ_polygons_in_tar(tmp_path: Path):
+    inputs = importlib.import_module("ramalhinho2021.inputs")
+    gallery = inputs.load_gallery_database(
+        _write_one_gallery(tmp_path / "gallery"), REGISTRATION_MODULE
+    )
+    frame_id = "frame_00000001"
+    frame_root = tmp_path / "eus" / frame_id
+    record = {
+        "frame_id": frame_id,
+        "slice_id": f"{frame_id}_cropped",
+        "status": "gallery",
+        "features": gallery_record()["features"][:1],
+    }
+    write_jsonl(frame_root / f"{frame_id}_cropped_gallery.jsonl", [record])
+    write_annotation_tar(
+        frame_root / f"{frame_id}_cropped_jpg_Label.tar",
+        [polygon(15), polygon(24)],
+    )
+
+    query = inputs.load_eus_queries(tmp_path / "eus", gallery.module)[0]
+
+    assert query.organ_labels == ("gallbladder", "kidney_left")
+    assert query.organ_label_source == "tar_active_polygons"
+    assert query.organ_label_source_path == (
+        frame_root / f"{frame_id}_cropped_jpg_Label.tar"
+    ).resolve()
+
+
+def test_explicit_eus_organ_labels_take_precedence_over_tar(tmp_path: Path):
+    inputs = importlib.import_module("ramalhinho2021.inputs")
+    gallery = inputs.load_gallery_database(
+        _write_one_gallery(tmp_path / "gallery"), REGISTRATION_MODULE
+    )
+    frame_id = "frame_00000001"
+    frame_root = tmp_path / "eus" / frame_id
+    write_jsonl(
+        frame_root / f"{frame_id}_cropped_gallery.jsonl",
+        [
+            {
+                "frame_id": frame_id,
+                "status": "gallery",
+                "features": gallery_record()["features"][:1],
+                "organ_labels": ["spleen"],
+            }
+        ],
+    )
+    write_annotation_tar(
+        frame_root / f"{frame_id}_cropped_jpg_Label.tar", [polygon(15)]
+    )
+
+    query = inputs.load_eus_queries(tmp_path / "eus", gallery.module)[0]
+
+    assert query.organ_labels == ("spleen",)
+    assert query.organ_label_source == "jsonl"
+
+
+def test_eus_organ_metadata_is_required_when_filtering_is_enabled(tmp_path: Path):
+    inputs = importlib.import_module("ramalhinho2021.inputs")
+    gallery = inputs.load_gallery_database(
+        _write_one_gallery(tmp_path / "gallery"), REGISTRATION_MODULE
+    )
+    frame_id = "frame_00000001"
+    write_jsonl(
+        tmp_path / "eus" / frame_id / f"{frame_id}_cropped_gallery.jsonl",
+        [
+            {
+                "frame_id": frame_id,
+                "status": "gallery",
+                "features": gallery_record()["features"][:1],
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="缺少 organ_labels.*TAR 不存在"):
+        inputs.load_eus_queries(tmp_path / "eus", gallery.module)
+
+    query = inputs.load_eus_queries(
+        tmp_path / "eus", gallery.module, require_organ_labels=False
+    )[0]
+    assert query.organ_labels == ()
+    assert query.organ_label_source == "unavailable"
 
 
 def _write_one_gallery(root: Path) -> Path:

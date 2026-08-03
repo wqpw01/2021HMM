@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ramalhinho-2021-reproduction"
-version = "0.1.0"
-description = "Local multi-labelled CBIR and HMM reproduction for Ramalhinho et al. (2021)"
+version = "0.2.0"
+description = "Organ-prefiltered vascular CBIR and HMM reproduction for Ramalhinho et al. (2021)"
 requires-python = ">=3.12"
 dependencies = [
   "numpy>=1.26",

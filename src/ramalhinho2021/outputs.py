@@ -28,6 +28,7 @@ def _candidate_payload(candidate: CandidateResult) -> dict[str, Any]:
         "distance": candidate.distance,
         "slice_id": record["slice_id"],
         "organ": record.get("organ"),
+        "organ_labels": record.get("organ_labels", []),
         "features": record.get("features", []),
         "center_world": record.get("center_world"),
         "u_axis_world": record.get("u_axis_world"),
@@ -149,6 +150,7 @@ def write_result_bundle(
     hmm_frame_results: dict[str, HMMFrameResult],
     hmm_window_results: list[HMMWindowResult],
     metadata: dict[str, Any],
+    organ_filter_mode: str = "overlap",
 ) -> None:
     output_dir = Path(output_dir)
     visualizations_dir = output_dir / "visualizations"
@@ -183,7 +185,23 @@ def write_result_bundle(
                 "numeric_frame_id": query.numeric_frame_id,
                 "status": query.status,
                 "query_features": query.record.get("features", []),
-                "single_frame": {"candidate_count": len(top_k), "top_k": top_k},
+                "query_organ_labels": list(query.organ_labels),
+                "organ_label_source": query.organ_label_source,
+                "single_frame": {
+                    "retrieval_status": single_frame.retrieval_status,
+                    "candidate_count": len(top_k),
+                    "organ_filter": {
+                        "mode": organ_filter_mode,
+                        "match_rule": "any_overlap"
+                        if organ_filter_mode == "overlap"
+                        else None,
+                        "filter_applied": single_frame.filter_applied,
+                        "gallery_count_before": single_frame.gallery_count_before,
+                        "eligible_gallery_count": single_frame.eligible_gallery_count,
+                        "fallback_reason": single_frame.fallback_reason,
+                    },
+                    "top_k": top_k,
+                },
                 "hmm_status": hmm_status,
                 "hmm_diagnostic": hmm_payload,
             }
@@ -195,6 +213,12 @@ def write_result_bundle(
                 "frame_id": query.frame_id,
                 "status": query.status,
                 "feature_count": len(query.record.get("features", [])),
+                "query_organ_labels": "+".join(query.organ_labels),
+                "organ_label_source": query.organ_label_source,
+                "organ_filter_applied": single_frame.filter_applied,
+                "eligible_gallery_count": single_frame.eligible_gallery_count,
+                "organ_filter_fallback_reason": single_frame.fallback_reason or "",
+                "retrieval_status": single_frame.retrieval_status,
                 "single_candidate_count": len(top_k),
                 "single_top1_slice_id": top_one.get("slice_id", ""),
                 "single_top1_distance": top_one.get("distance", ""),
@@ -250,8 +274,9 @@ def write_result_bundle(
     )
     (output_dir / "README.md").write_text(
         "# Ramalhinho 2021 检索结果\n\n"
-        "本目录包含单帧 CBIR 结果和诊断性 HMM 路径。EUS 输入没有患者世界坐标"
-        "或配准真值，因此不报告 TRE 或临床成功率。\n",
+        "本目录包含器官预筛选后的单帧血管 CBIR 结果和诊断性 HMM 路径。"
+        "器官标签只用于缩小 CT 候选范围，不参与血管距离或 HMM 转移代价。"
+        "EUS 输入没有患者世界坐标或配准真值，因此不报告 TRE 或临床成功率。\n",
         encoding="utf-8",
     )
     _write_contact_sheets(visualizations, output_dir / "contact_sheets")

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any
+from typing import AbstractSet, Any
 
 import numpy as np
 
@@ -21,6 +22,11 @@ class SingleFrameResult:
     query: QueryRecord
     candidates: tuple[CandidateResult, ...]
     retrieval_result: Any | None
+    filter_applied: bool = False
+    gallery_count_before: int = 0
+    eligible_gallery_count: int = 0
+    fallback_reason: str | None = None
+    retrieval_status: str = "retrieved"
 
 
 @dataclass(frozen=True)
@@ -56,7 +62,10 @@ class HMMWindowResult:
 
 
 def build_hmm_window_assignments(
-    queries: list[QueryRecord], window_size: int = 6
+    queries: list[QueryRecord],
+    window_size: int = 6,
+    *,
+    retrievable_frame_ids: AbstractSet[str] | None = None,
 ) -> tuple[list[HMMWindow], dict[str, HMMWindowAssignment]]:
     if window_size < 2:
         raise ValueError("HMM 窗口大小必须至少为 2")
@@ -64,7 +73,10 @@ def build_hmm_window_assignments(
     valid_runs: list[list[QueryRecord]] = []
     current_run: list[QueryRecord] = []
     for query in queries:
-        if query.feature_vector is None:
+        if query.feature_vector is None or (
+            retrievable_frame_ids is not None
+            and query.frame_id not in retrievable_frame_ids
+        ):
             if current_run:
                 valid_runs.append(current_run)
                 current_run = []
@@ -102,17 +114,63 @@ def run_single_frame_retrieval(
     queries: list[QueryRecord],
     k: int = 200,
     search_range: int = 2,
+    organ_filter_mode: str = "overlap",
 ) -> dict[str, SingleFrameResult]:
     if k < 1:
         raise ValueError("K 必须至少为 1")
     if search_range < 0:
         raise ValueError("search_range 不能为负数")
-    cbir = gallery.create_cbir(search_range=search_range)
+    if organ_filter_mode not in {"overlap", "off"}:
+        raise ValueError("organ_filter_mode 必须是 overlap 或 off")
+    full_cbir = gallery.create_cbir(search_range=search_range)
+    filtered_cbir_cache: dict[tuple[str, ...], tuple[Any, int]] = {}
+    gallery_count = len(gallery.features)
     results: dict[str, SingleFrameResult] = {}
     for query in queries:
         if query.feature_vector is None:
-            results[query.frame_id] = SingleFrameResult(query, (), None)
+            results[query.frame_id] = SingleFrameResult(
+                query=query,
+                candidates=(),
+                retrieval_result=None,
+                gallery_count_before=gallery_count,
+                retrieval_status="unindexed",
+            )
             continue
+        filter_applied = False
+        fallback_reason = None
+        eligible_gallery_count = gallery_count
+        cbir = full_cbir
+        if organ_filter_mode == "off":
+            fallback_reason = "disabled"
+        elif not query.organ_labels:
+            fallback_reason = "empty_query_organs"
+        else:
+            cached = filtered_cbir_cache.get(query.organ_labels)
+            if cached is None:
+                query_organs = set(query.organ_labels)
+                filtered_database: dict[str, list[Any]] = defaultdict(list)
+                eligible_gallery_count = 0
+                for feature_vector in gallery.features:
+                    candidate_organs = gallery.organ_labels_by_pose_id[
+                        id(feature_vector.pose)
+                    ]
+                    if query_organs.intersection(candidate_organs):
+                        key = gallery.module.DatabaseGenerator._make_db_key(
+                            feature_vector
+                        )
+                        filtered_database[key].append(feature_vector)
+                        eligible_gallery_count += 1
+                filtered_cbir = gallery.create_cbir(
+                    search_range=search_range, database=dict(filtered_database)
+                )
+                cached = filtered_cbir, eligible_gallery_count
+                filtered_cbir_cache[query.organ_labels] = cached
+            filtered_cbir, eligible_gallery_count = cached
+            if eligible_gallery_count:
+                cbir = filtered_cbir
+                filter_applied = True
+            else:
+                fallback_reason = "no_organ_overlap"
         retrieval_result = cbir.retrieve(query.feature_vector, K=k)
         candidates = tuple(
             CandidateResult(
@@ -129,6 +187,11 @@ def run_single_frame_retrieval(
             query=query,
             candidates=candidates,
             retrieval_result=retrieval_result,
+            filter_applied=filter_applied,
+            gallery_count_before=gallery_count,
+            eligible_gallery_count=eligible_gallery_count,
+            fallback_reason=fallback_reason,
+            retrieval_status="retrieved" if candidates else "no_vascular_candidate",
         )
     return results
 

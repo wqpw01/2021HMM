@@ -13,6 +13,8 @@ from typing import Any
 
 import numpy as np
 
+from .organs import load_organ_labels_from_tar, normalize_organ_labels
+
 
 @dataclass(frozen=True)
 class GalleryDatabase:
@@ -20,13 +22,19 @@ class GalleryDatabase:
     database: dict[str, list[Any]]
     features: list[Any]
     records_by_pose_id: dict[int, dict[str, Any]]
+    organ_labels_by_pose_id: dict[int, tuple[str, ...]]
     gallery_root: Path
     manifest_path: Path
     max_rotation_error: float
 
-    def create_cbir(self, search_range: int = 2):
+    def create_cbir(
+        self,
+        search_range: int = 2,
+        database: dict[str, list[Any]] | None = None,
+    ):
         return self.module.MultiLabelledCBIR(
-            database=self.database, search_range=search_range
+            database=self.database if database is None else database,
+            search_range=search_range,
         )
 
     def create_hmm(self, **kwargs):
@@ -39,6 +47,9 @@ class QueryRecord:
     frame_id: str
     status: str
     feature_vector: Any | None
+    organ_labels: tuple[str, ...]
+    organ_label_source: str
+    organ_label_source_path: Path | None
     record: dict[str, Any]
     manifest_path: Path
 
@@ -140,7 +151,10 @@ def _triplets_from_features(features: Any, module: ModuleType) -> list[Any]:
 
 
 def load_gallery_database(
-    manifest_path: str | Path, registration_module_path: str | Path
+    manifest_path: str | Path,
+    registration_module_path: str | Path,
+    *,
+    require_organ_labels: bool = True,
 ) -> GalleryDatabase:
     manifest_path = Path(manifest_path).resolve()
     if not manifest_path.is_file():
@@ -149,6 +163,7 @@ def load_gallery_database(
     database: dict[str, list[Any]] = defaultdict(list)
     features: list[Any] = []
     records_by_pose_id: dict[int, dict[str, Any]] = {}
+    organ_labels_by_pose_id: dict[int, tuple[str, ...]] = {}
     max_rotation_error = 0.0
 
     with manifest_path.open("r", encoding="utf-8") as handle:
@@ -157,6 +172,15 @@ def load_gallery_database(
                 continue
             try:
                 record = json.loads(line)
+                if "organ_labels" in record:
+                    organ_labels = normalize_organ_labels(
+                        record["organ_labels"],
+                        context=f"{manifest_path.name} 第 {line_number} 行",
+                    )
+                elif require_organ_labels:
+                    raise ValueError("缺少 organ_labels")
+                else:
+                    organ_labels = ()
                 feature_vector, rotation_error = _feature_vector_from_gallery_record(
                     record, module
                 )
@@ -168,6 +192,7 @@ def load_gallery_database(
             database[key].append(feature_vector)
             features.append(feature_vector)
             records_by_pose_id[id(feature_vector.pose)] = record
+            organ_labels_by_pose_id[id(feature_vector.pose)] = organ_labels
             max_rotation_error = max(max_rotation_error, rotation_error)
 
     if not features:
@@ -177,6 +202,7 @@ def load_gallery_database(
         database=dict(database),
         features=features,
         records_by_pose_id=records_by_pose_id,
+        organ_labels_by_pose_id=organ_labels_by_pose_id,
         gallery_root=manifest_path.parent,
         manifest_path=manifest_path,
         max_rotation_error=max_rotation_error,
@@ -191,7 +217,39 @@ def _query_feature_vector(record: dict[str, Any], module: ModuleType) -> Any | N
     )
 
 
-def load_eus_queries(eus_root: str | Path, module: ModuleType) -> list[QueryRecord]:
+def _query_organ_labels(
+    record: dict[str, Any],
+    frame_id: str,
+    manifest_path: Path,
+    *,
+    require_organ_labels: bool,
+) -> tuple[tuple[str, ...], str, Path | None]:
+    if "organ_labels" in record:
+        return (
+            normalize_organ_labels(record["organ_labels"], context=f"EUS {frame_id}"),
+            "jsonl",
+            manifest_path,
+        )
+    annotation_path = manifest_path.parent / f"{frame_id}_cropped_jpg_Label.tar"
+    if annotation_path.is_file():
+        return (
+            load_organ_labels_from_tar(annotation_path),
+            "tar_active_polygons",
+            annotation_path.resolve(),
+        )
+    if not require_organ_labels:
+        return (), "unavailable", None
+    raise ValueError(
+        f"EUS {frame_id} 缺少 organ_labels，且标注 TAR 不存在: {annotation_path}"
+    )
+
+
+def load_eus_queries(
+    eus_root: str | Path,
+    module: ModuleType,
+    *,
+    require_organ_labels: bool = True,
+) -> list[QueryRecord]:
     eus_root = Path(eus_root).resolve()
     if not eus_root.is_dir():
         raise FileNotFoundError(f"EUS 根目录不存在: {eus_root}")
@@ -212,6 +270,14 @@ def load_eus_queries(eus_root: str | Path, module: ModuleType) -> list[QueryReco
             frame_id = str(record["frame_id"])
             numeric_frame_id = int(frame_id.rsplit("_", 1)[1])
             feature_vector = _query_feature_vector(record, module)
+            organ_labels, organ_label_source, organ_label_source_path = (
+                _query_organ_labels(
+                    record,
+                    frame_id,
+                    manifest_path,
+                    require_organ_labels=require_organ_labels,
+                )
+            )
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
             raise ValueError(f"EUS 清单无效: {manifest_path}: {error}") from error
         queries.append(
@@ -220,6 +286,9 @@ def load_eus_queries(eus_root: str | Path, module: ModuleType) -> list[QueryReco
                 frame_id=frame_id,
                 status=str(record.get("status", "")),
                 feature_vector=feature_vector,
+                organ_labels=organ_labels,
+                organ_label_source=organ_label_source,
+                organ_label_source_path=organ_label_source_path,
                 record=record,
                 manifest_path=manifest_path,
             )

@@ -57,6 +57,20 @@ def test_write_result_bundle_creates_auditable_numeric_and_visual_outputs(
     assert len(result_rows) == 6
     assert result_rows[0]["single_frame"]["candidate_count"] == 2
     assert result_rows[0]["single_frame"]["top_k"][0]["slice_id"]
+    assert result_rows[0]["query_organ_labels"] == ["liver"]
+    assert result_rows[0]["organ_label_source"] == "jsonl"
+    assert result_rows[0]["single_frame"]["organ_filter"] == {
+        "mode": "overlap",
+        "match_rule": "any_overlap",
+        "filter_applied": True,
+        "gallery_count_before": 3,
+        "eligible_gallery_count": 3,
+        "fallback_reason": None,
+    }
+    assert result_rows[0]["single_frame"]["retrieval_status"] == "retrieved"
+    assert result_rows[0]["single_frame"]["top_k"][0]["organ_labels"] == [
+        "liver"
+    ]
     assert result_rows[0]["hmm_status"] == "diagnostic_only"
     assert result_rows[0]["hmm_diagnostic"]["selected"]["rank"] in (1, 2)
     window_rows = _read_jsonl(output_dir / "hmm_diagnostic_windows.jsonl")
@@ -72,7 +86,12 @@ def test_write_result_bundle_creates_auditable_numeric_and_visual_outputs(
     with (output_dir / "single_frame_summary.csv").open(
         newline="", encoding="utf-8"
     ) as handle:
-        assert len(list(csv.DictReader(handle))) == 6
+        summary_rows = list(csv.DictReader(handle))
+    assert len(summary_rows) == 6
+    assert summary_rows[0]["query_organ_labels"] == "liver"
+    assert summary_rows[0]["organ_label_source"] == "jsonl"
+    assert summary_rows[0]["organ_filter_applied"] == "True"
+    assert summary_rows[0]["eligible_gallery_count"] == "3"
 
 
 def _read_jsonl(path: Path) -> list[dict]:

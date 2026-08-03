@@ -3,9 +3,10 @@
 本项目以 `registration/2021.py` 为核心，将已建 CT 特征库
 `gallery.jsonl` 与 EUS 血管截面特征作为外部输入，执行：
 
-1. 多标签单帧 CBIR 检索；
-2. 论文配置的六帧 HMM/Viterbi 候选路径筛选；
-3. JSONL、CSV、运行元数据和对比图导出。
+1. EUS/CT 器官集合预筛选；
+2. 多标签单帧血管 CBIR 检索；
+3. 论文配置的六帧 HMM/Viterbi 候选路径筛选；
+4. JSONL、CSV、运行元数据和对比图导出。
 
 项目位于 WSL：
 
@@ -74,9 +75,9 @@ python -m pytest -q
 case_2/gallery/gallery.jsonl
 ```
 
-每条 `status="gallery"` 记录必须包含：
+默认器官过滤模式下，每条 `status="gallery"` 记录必须包含：
 
-- `slice_id`、`organ`；
+- `slice_id`、`organ`、`organ_labels`；
 - `center_world`；
 - `u_axis_world`、`v_axis_world`、`normal_world`；
 - `features`，每项包含 `label、x_mm、y_mm、area_mm2`；
@@ -84,6 +85,10 @@ case_2/gallery/gallery.jsonl
 
 三条方向轴必须是有限、正交、单位化且构成右手坐标系。图片路径相对于
 `gallery.jsonl` 所在目录；图片缺失不影响数值检索，只会在可视化中显示占位图。
+
+`organ` 表示该切面从哪个器官表面采样生成，不等于切面实际包含的器官，不能
+用于过滤。`organ_labels` 才是切面实际相交的器官集合，必须是排序、去重后的
+规范英文列表。空列表合法。
 
 ### EUS 特征
 
@@ -95,6 +100,21 @@ EUS 根目录按下列形式组织：
 
 项目按帧号末尾数字升序加载。`status="gallery"` 且 `features` 非空的帧参与
 检索；`unindexed` 帧保留在报告中，并切断 HMM 连续序列。
+
+器官信息按以下顺序读取：
+
+1. EUS JSONL 已有 `organ_labels` 时直接使用；
+2. 缺少字段时，解析同目录 `<frame>_cropped_jpg_Label.tar`；
+3. 两者都没有时，默认过滤模式报错。
+
+TAR 只读取 `Polys[].Shapes[]` 中启用的直接器官轮廓，不读取帧级
+`FrameLabelModel`，也不把胆管、胰管或胰腺分区推断为器官。支持的直接器官
+标签为肝、胆囊、脾、胰腺、左右肾上腺、左右肾和十二指肠；轮廓必须至少有
+三个有限坐标点且面积大于零。
+
+默认匹配规则是“任意重合”：只要 EUS 与 CT 的 `organ_labels` 至少共享一个
+器官，该 CT 切面即可进入后续血管 CBIR。EUS 器官为空或过滤后零候选时回退
+全 CT 库，并在结果中记录不同的回退原因。
 
 ### 可选真实时间戳
 
@@ -135,6 +155,16 @@ python run_reproduction.py run \
   --output-dir '/path/to/results'
 ```
 
+显式复现旧版、不使用器官预筛选的全库血管基线：
+
+```bash
+python run_reproduction.py run \
+  --gallery-jsonl '/path/to/case_2/gallery/gallery.jsonl' \
+  --eus-root '/path/to/EUS标注与特征' \
+  --organ-filter-mode off \
+  --output-dir '/path/to/results-baseline'
+```
+
 传入真实时间戳：
 
 ```bash
@@ -161,7 +191,8 @@ results/
 └── contact_sheets/
 ```
 
-- `single_frame_results.jsonl`：每帧查询特征、Top-K 和 HMM 选中项；
+- `single_frame_results.jsonl`：每帧器官来源、过滤决策、查询特征、Top-K 和
+  HMM 选中项；
 - `single_frame_summary.csv`：便于表格查看的 Top-1 与 HMM 摘要；
 - `hmm_diagnostic_windows.jsonl`：每个六帧窗口、时间戳、路径和转移代价；
 - `run_metadata.json`：输入哈希、参数、统计、假设和姿态恢复误差；
@@ -173,7 +204,11 @@ results/
   论文公式中所有类别数量差之和不超过 2。
 - HMM 继续使用原脚本逻辑：CBIR 先选 Top-K，进入 HMM 后节点代价为 0，路径
   主要由相邻候选的运动转移代价决定。
-- `organ` 只写入结果，不参与检索过滤；算法使用的是血管标签与截面特征。
+- 器官预筛选是本项目在论文血管 CBIR 之前新增的策略，不是论文原始距离公式。
+  器官不参与血管距离或 HMM 转移代价。
+- 多器官采用用户指定的“任意重合”，与服务器已有 DINO 流程采用的“包含全部”
+  不是同一规则。
+- `organ` 单值只写入结果；只有 `organ_labels` 集合参与预筛选。
 - 当前 EUS 数据声明 `patient_world_pose=false`，因此 HMM 输出是 CT 候选路径，
   不是经过真值验证的患者三维轨迹。
 - 没有患者真值时不计算 TRE，也不报告论文意义上的配准成功率。
