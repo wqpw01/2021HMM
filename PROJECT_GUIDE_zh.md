@@ -17,8 +17,8 @@
 |---|---:|---|
 | CT 候选切面 | 112,749 | `gallery.jsonl` 中可检索的 CT 模拟超声切面 |
 | EUS 总帧数 | 105 | 输入目录中检测到的查询帧 |
-| 有血管特征、完成单帧检索 | 91 | 每帧都返回完整 Top-200 |
-| 无血管特征、单帧无结果 | 14 | `status=unindexed` 且 `features=[]` |
+| 有可用血管特征、完成单帧检索 | 91 | 每帧都返回完整 Top-200 |
+| 无可用血管特征、单帧无结果 | 14 | `status=unindexed` 且 `features=[]` |
 | 实际应用器官预筛选 | 18 | 同时具有血管特征和非空活动器官轮廓 |
 | 空器官集合、回退全 CT 库 | 73 | 仍然完成了血管检索，不会因此丢帧 |
 | HMM 窗口 | 43 | 每个窗口包含 6 个可检索帧 |
@@ -26,8 +26,9 @@
 | 有单帧结果但没有 HMM 结果 | 3 | 所在连续有效段不足 6 帧 |
 
 最重要的事实是：**器官过滤没有造成任何有效 EUS 帧没有单帧结果。**91 个
-具有血管特征的 EUS 帧全部得到 200 个候选。没有单帧结果的 14 帧在进入检索
-前就已经没有血管三元组，因此无法计算论文中的血管 CBIR 距离。
+具有可用血管特征的 EUS 帧全部得到 200 个候选。没有单帧结果的 14 帧在进入
+检索前没有可用血管三元组，因此无法计算论文中的血管 CBIR 距离。这里的“没有
+可用特征”不一定等于“人工没有画血管”：人工血管轮廓也可能因质量检查而被排除。
 
 ## 2. 为什么有的帧没有结果
 
@@ -39,20 +40,26 @@
 
 | 帧号 | TAR 中解析到的器官 | 无结果的直接原因 |
 |---|---|---|
-| `frame_00003744` | 无 | 没有血管特征 |
-| `frame_00005310` | gallbladder | 有器官，但没有血管特征 |
-| `frame_00006055` | 无 | 没有血管特征 |
-| `frame_00007952` | kidney_left、spleen | 有器官，但没有血管特征 |
-| `frame_00009279` | adrenal_gland_left | 有器官，但没有血管特征 |
-| `frame_00010420` | adrenal_gland_left | 有器官，但没有血管特征 |
-| `frame_00010461` | adrenal_gland_left | 有器官，但没有血管特征 |
-| `frame_00011477` | 无 | 没有血管特征 |
-| `frame_00011698` | gallbladder | 有器官，但没有血管特征 |
-| `frame_00016189` | 无 | 没有血管特征 |
-| `frame_00018247` | 无 | 没有血管特征 |
-| `frame_00023556` | gallbladder | 有器官，但没有血管特征 |
-| `frame_00030029` | gallbladder | 有器官，但没有血管特征 |
-| `frame_00032757` | 无 | 没有血管特征 |
+| `frame_00003744` | 无 | 未生成可用血管特征 |
+| `frame_00005310` | gallbladder | 门静脉、脾静脉触边，被跳过 |
+| `frame_00006055` | 无 | 未生成可用血管特征 |
+| `frame_00007952` | kidney_left、spleen | 有器官，但未生成可用血管特征 |
+| `frame_00009279` | adrenal_gland_left | 有器官，但未生成可用血管特征 |
+| `frame_00010420` | adrenal_gland_left | 有器官，但未生成可用血管特征 |
+| `frame_00010461` | adrenal_gland_left | 有器官，但未生成可用血管特征 |
+| `frame_00011477` | 无 | 未生成可用血管特征 |
+| `frame_00011698` | gallbladder | 有器官，但未生成可用血管特征 |
+| `frame_00016189` | 无 | 腹主动脉触边，被跳过 |
+| `frame_00018247` | 无 | 未生成可用血管特征 |
+| `frame_00023556` | gallbladder | 有器官，但未生成可用血管特征 |
+| `frame_00030029` | gallbladder | 有器官，但未生成可用血管特征 |
+| `frame_00032757` | 无 | 门静脉、下腔静脉触边，被跳过 |
+
+其中 `frame_00005310`、`frame_00016189` 和 `frame_00032757` 的人工标注中有
+血管轮廓，但裁剪后的连通区域触碰图像边界，预处理记录为
+跳过原因 `touches_image_edge`，所以这些轮廓没有转换成检索三元组。其余 11 帧的
+处理结果没有已接受血管特征，也没有 `skipped_components` 记录；这只能说明当前
+处理后输入没有可用特征，不能据此反推人工标注者一定没有画过血管。
 
 代码在 `inputs.py::_query_feature_vector()` 中执行以下判断：只有
 `status="gallery"` 且 `features` 非空时，才创建 EUS `FeatureVector`。否则
@@ -119,52 +126,52 @@
 
 ```mermaid
 flowchart TD
-    A[命令行 validate-eus / validate / run] --> B[加载 registration/2021.py]
-    B --> C1[读取 CT gallery.jsonl]
-    B --> C2[扫描 EUS frame_* 目录]
+    A["命令行 validate-eus / validate / run"] --> B["加载 registration/2021.py"]
+    B --> C1["读取 CT gallery.jsonl"]
+    B --> C2["扫描 EUS frame_* 目录"]
 
-    C1 --> D1[验证位姿轴、center_world、features、organ_labels]
-    D1 --> E1[血管项转 VesselTriplet]
-    E1 --> F1[构造 ProbePose 与带 pose 的 FeatureVector]
-    F1 --> G1[按动脉/静脉数量生成数据库键]
+    C1 --> D1["验证位姿轴、center_world、features、organ_labels"]
+    D1 --> E1["血管项转 VesselTriplet"]
+    E1 --> F1["构造 ProbePose 与带 pose 的 FeatureVector"]
+    F1 --> G1["按动脉/静脉数量生成数据库键"]
 
-    C2 --> D2[每帧读取唯一 EUS JSONL]
-    D2 --> E2{JSONL 是否有 organ_labels}
-    E2 -- 是 --> F2[验证并使用显式器官集合]
-    E2 -- 否 --> F3[解析同帧 Label.tar 活动器官轮廓]
-    D2 --> G2{status=gallery 且 features 非空}
-    G2 -- 否 --> U[标记 unindexed，单帧候选为空]
-    G2 -- 是 --> H2[构造无 pose 的查询 FeatureVector]
+    C2 --> D2["每帧读取唯一 EUS JSONL"]
+    D2 --> E2{"EUS JSONL 是否有 organ_labels"}
+    E2 -- 是 --> F2["验证并使用显式器官集合"]
+    E2 -- 否 --> F3["解析同帧 Label.tar 活动器官轮廓"]
+    D2 --> G2{"EUS status=gallery 且 features 非空"}
+    G2 -- 否 --> U["标记 unindexed，单帧候选为空"]
+    G2 -- 是 --> H2["构造无 pose 的 EUS 查询 FeatureVector"]
 
-    F2 --> I{器官集合是否非空}
+    F2 --> I{"EUS 器官集合是否非空"}
     F3 --> I
-    I -- 否 --> J1[回退完整 CT 库]
-    I -- 是 --> J2[保留与 EUS 至少一个器官重合的 CT 切面]
-    J2 --> K{过滤后是否有 CT 候选}
+    I -- 否 --> J1["回退完整 CT 库"]
+    I -- 是 --> J2["筛选与 EUS 至少一个器官重合的 CT 切面"]
+    J2 --> K{"筛选后是否有 CT 候选"}
     K -- 否 --> J1
-    K -- 是 --> L[器官子库]
+    K -- 是 --> L["CT 器官子库"]
 
     G1 --> J1
     G1 --> L
-    H2 --> M[MultiLabelledCBIR]
+    H2 --> M["MultiLabelledCBIR"]
     J1 --> M
     L --> M
-    M --> N[按 r 过滤血管数量组合]
-    N --> O[计算多标签血管距离并排序]
-    O --> P[每帧 Top-K 单帧结果]
+    M --> N["按 r 过滤血管数量组合"]
+    N --> O["计算多标签血管距离并排序"]
+    O --> P["每帧 Top-K 单帧结果"]
 
-    P --> Q[按 numeric_frame_id 排序]
+    P --> Q["按 numeric_frame_id 排序"]
     U --> Q
-    Q --> R[不可索引或零候选帧切断连续段]
-    R --> S{连续段长度是否至少 N=6}
-    S -- 否 --> T[保留单帧结果，HMM unavailable]
-    S -- 是 --> V[生成滑动六帧窗口]
-    V --> W[Viterbi 选择最小转移代价路径]
+    Q --> R["不可索引或零候选帧切断连续段"]
+    R --> S{"连续段长度是否至少 N=6"}
+    S -- 否 --> T["保留单帧结果，HMM unavailable"]
+    S -- 是 --> V["生成滑动六帧窗口"]
+    V --> W["Viterbi 选择最小转移代价路径"]
 
-    P --> X[写单帧 JSONL / CSV]
+    P --> X["写单帧 JSONL / CSV"]
     T --> X
-    W --> Y[写 HMM 窗口与逐帧 HMM 选择]
-    X --> Z[生成可视化、汇总页和运行元数据]
+    W --> Y["写 HMM 窗口与逐帧 HMM 选择"]
+    X --> Z["生成可视化、汇总页和运行元数据"]
     Y --> Z
 ```
 
@@ -175,33 +182,33 @@ flowchart TD
 ```mermaid
 flowchart LR
     subgraph CT流
-        CTJ[CT gallery JSONL 行] --> CTF[features]
-        CTJ --> CTO[organ_labels]
-        CTJ --> CTP[center + u/v/normal]
-        CTF --> CTV[CT FeatureVector]
-        CTP --> POSE[ProbePose]
+        CTJ["CT gallery JSONL 行"] --> CTF["features"]
+        CTJ --> CTO["organ_labels"]
+        CTJ --> CTP["center + u/v/normal"]
+        CTF --> CTV["CT FeatureVector"]
+        CTP --> POSE["ProbePose"]
         POSE --> CTV
-        CTO --> IDX[位姿到器官集合索引]
+        CTO --> IDX["位姿到器官集合索引"]
     end
 
     subgraph EUS流
-        EJ[EUS JSONL] --> EF[features]
-        EJ --> EO{显式 organ_labels?}
-        ET[同帧 Label.tar] --> EP[活动器官多边形]
+        EJ["EUS JSONL"] --> EF["features"]
+        EJ --> EO{"显式 organ_labels"}
+        ET["同帧 Label.tar"] --> EP["活动器官多边形"]
         EO -- 否 --> EP
-        EO -- 是 --> QO[EUS 器官集合]
+        EO -- 是 --> QO["EUS 器官集合"]
         EP --> QO
-        EF --> QV[EUS FeatureVector]
+        EF --> QV["EUS FeatureVector"]
     end
 
-    QO --> FILTER[器官任意重合预筛选]
+    QO --> FILTER["器官任意重合预筛选"]
     IDX --> FILTER
     CTV --> FILTER
-    FILTER --> SUBDB[CT 子数据库或完整数据库]
-    SUBDB --> CBIR[血管 CBIR]
+    FILTER --> SUBDB["CT 子数据库或完整数据库"]
+    SUBDB --> CBIR["血管 CBIR"]
     QV --> CBIR
-    CBIR --> TOPK[单帧 Top-K]
-    TOPK --> HMM[六帧 HMM/Viterbi]
+    CBIR --> TOPK["单帧 Top-K"]
+    TOPK --> HMM["六帧 HMM/Viterbi"]
 ```
 
 ### 5.1 CT 数据对象转换
@@ -349,15 +356,22 @@ artery:1_vein:3
 表示该 CT 切面包含 1 个动脉截面和 3 个静脉截面。正式图库 112,749 条记录
 形成了 291 种血管数量键。
 
-### 7.3 EUS 是否可检索
+### 7.3 EUS 查询帧准入：是否具备血管检索条件
 
-只有同时满足以下条件的帧才进入单帧 CBIR：
+这一步检查的是 EUS 查询帧，不是对 CT 检索库做筛选。程序逐帧判断该张 EUS
+是否已经生成可供血管 CBIR 使用的查询特征。只有同时满足以下条件的 EUS 帧才
+进入单帧 CBIR：
 
 ```text
 record.status == "gallery" AND record.features 非空
 ```
 
-不满足时，项目仍保留该帧的记录、器官信息和可视化位置，但不会虚构血管特征。
+其中 `status == "gallery"` 表示该 EUS 记录可进入检索；`features 非空` 表示至少
+有一个通过预处理质量检查的血管截面特征。不满足时，项目仍保留该 EUS 帧的
+记录、器官信息和可视化位置，但不会虚构血管特征，也不会为它计算单帧 Top-K。
+
+CT 侧是另一件事：EUS 通过上述准入后，第 8 节才使用 EUS 器官集合筛选 CT
+候选切面；随后在筛选出的 CT 子库中计算血管特征距离。
 
 ## 8. 器官预筛选
 
@@ -476,17 +490,17 @@ Viterbi 是动态规划算法。它不会暴力枚举 `K^N` 条路径，而是�
 
 ```mermaid
 flowchart LR
-    A[每帧 QueryRecord] --> B[SingleFrameResult]
-    B --> C[候选转 JSON payload]
-    B --> D[Top-1 摘要]
-    B --> E[EUS/Top-1/HMM 三联图]
-    F[HMMWindowResult] --> G[窗口 JSONL]
-    C --> H[single_frame_results.jsonl]
-    D --> I[single_frame_summary.csv]
-    E --> J[visualizations]
-    E --> K[contact_sheets]
-    G --> L[hmm_diagnostic_windows.jsonl]
-    M[输入哈希、参数、统计] --> N[run_metadata.json]
+    A["每帧 QueryRecord"] --> B["SingleFrameResult"]
+    B --> C["候选转 JSON payload"]
+    B --> D["Top-1 摘要"]
+    B --> E["EUS/Top-1/HMM 三联图"]
+    F["HMMWindowResult"] --> G["窗口 JSONL"]
+    C --> H["single_frame_results.jsonl"]
+    D --> I["single_frame_summary.csv"]
+    E --> J["visualizations"]
+    E --> K["contact_sheets"]
+    G --> L["hmm_diagnostic_windows.jsonl"]
+    M["输入哈希、参数、统计"] --> N["run_metadata.json"]
 ```
 
 ## 12. 输出目录结构
