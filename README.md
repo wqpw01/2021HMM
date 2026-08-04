@@ -1,5 +1,8 @@
 # Ramalhinho 2021 本地检索复现
 
+完整的数据流、算法、参数、输出字段、术语和无结果原因说明见
+[`PROJECT_GUIDE_zh.md`](PROJECT_GUIDE_zh.md)。
+
 本项目以 `registration/2021.py` 为核心，将已建 CT 特征库
 `gallery.jsonl` 与 EUS 血管截面特征作为外部输入，执行：
 
