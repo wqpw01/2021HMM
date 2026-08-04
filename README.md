@@ -1,7 +1,7 @@
 # Ramalhinho 2021 本地检索复现
 
 完整的数据流、算法、参数、输出字段、术语和无结果原因说明见
-[`PROJECT_GUIDE_zh.md`](PROJECT_GUIDE_zh.md)。
+[`HMM文档.md`](HMM%E6%96%87%E6%A1%A3.md)。
 
 本项目以 `registration/2021.py` 为核心，将已建 CT 特征库
 `gallery.jsonl` 与 EUS 血管截面特征作为外部输入，执行：
@@ -134,14 +134,14 @@ frame_00000273,0.025
 
 ## 使用方法
 
-目前真实图库缺失时，可以先验证现有 EUS：
+只检查 EUS 目录和特征清单时，可以先运行：
 
 ```bash
 python run_reproduction.py validate-eus \
   --eus-root '/mnt/c/Users/zhangyutang/Desktop/交付文件2026.7.25/EUS标注与特征'
 ```
 
-拿到真实 `gallery.jsonl` 后，先验证图库和 EUS：
+联合检查真实 `gallery.jsonl` 与 EUS 时，运行：
 
 ```bash
 python run_reproduction.py validate \
