@@ -173,6 +173,6 @@ Expected: both commands exit 0 and the help lists every adjustable parameter.
 
 Run `git diff --check`, inspect `git diff --stat` and `git status --short`, and verify that the pre-existing modified documentation spec and `.superpowers/` files are not staged or changed by this implementation.
 
-- [ ] **Step 4: Commit and push the requested project changes**
+- [x] **Step 4: Commit and push the requested project changes**
 
 Stage only the plan, source, tests, README, and HMM documentation changed by this implementation. Commit without including pre-existing user changes, then push the current `main` branch to `origin` without force.
