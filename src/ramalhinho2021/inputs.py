@@ -16,6 +16,12 @@ import numpy as np
 from .organs import load_organ_labels_from_tar, normalize_organ_labels
 
 
+FORMAL_PLANE_WIDTH_MM = 100.0
+FORMAL_PLANE_LENGTH_MM = 100.0
+FORMAL_EUS_COORDINATE_SYSTEM = "synthetic_2d_10cm_crop"
+FORMAL_VESSEL_LABELS = frozenset({"artery", "vein"})
+
+
 @dataclass(frozen=True)
 class GalleryDatabase:
     module: ModuleType
@@ -150,11 +156,131 @@ def _triplets_from_features(features: Any, module: ModuleType) -> list[Any]:
     return triplets
 
 
+def _formal_plane_dimensions(record: dict[str, Any], context: str) -> tuple[float, float]:
+    try:
+        width_mm = float(record["width_mm"])
+        length_mm = float(record["length_mm"])
+        spacing = record["pixel_spacing_mm"]
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(
+            f"{context} 必须包含 width_mm、length_mm 和 pixel_spacing_mm"
+        ) from error
+    if not all(math.isfinite(value) for value in (width_mm, length_mm)):
+        raise ValueError(f"{context} 的平面尺寸必须是有限数值")
+    if not math.isclose(
+        width_mm, FORMAL_PLANE_WIDTH_MM, rel_tol=0.0, abs_tol=1e-6
+    ) or not math.isclose(
+        length_mm, FORMAL_PLANE_LENGTH_MM, rel_tol=0.0, abs_tol=1e-6
+    ):
+        raise ValueError(f"{context} 平面尺寸必须为 100 mm x 100 mm")
+    if not isinstance(spacing, (list, tuple)) or len(spacing) != 2:
+        raise ValueError(f"{context} pixel_spacing_mm 必须是两个数值")
+    try:
+        spacing_values = [float(value) for value in spacing]
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{context} pixel_spacing_mm 必须是两个数值") from error
+    if any(not math.isfinite(value) or value <= 0.0 for value in spacing_values):
+        raise ValueError(f"{context} pixel_spacing_mm 必须是有限正数")
+    return width_mm, length_mm
+
+
+def _validate_formal_features(
+    features: Any,
+    *,
+    width_mm: float,
+    length_mm: float,
+    context: str,
+) -> None:
+    if not isinstance(features, list):
+        raise ValueError(f"{context} features 必须是列表")
+    for index, item in enumerate(features):
+        if not isinstance(item, dict):
+            raise ValueError(f"{context} features[{index}] 必须是对象")
+        label = item.get("label")
+        if label not in FORMAL_VESSEL_LABELS:
+            raise ValueError(
+                f"{context} features[{index}] label 必须是 artery 或 vein"
+            )
+        try:
+            x_mm = float(item["x_mm"])
+            y_mm = float(item["y_mm"])
+            area_mm2 = float(item["area_mm2"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(
+                f"{context} features[{index}] 必须包含数值 x_mm、y_mm、area_mm2"
+            ) from error
+        if not all(math.isfinite(value) for value in (x_mm, y_mm, area_mm2)):
+            raise ValueError(f"{context} features[{index}] 数值必须有限")
+        if not (0.0 <= x_mm <= width_mm and 0.0 <= y_mm <= length_mm):
+            raise ValueError(f"{context} x_mm/y_mm 必须位于 100 mm 平面内")
+        if area_mm2 < 0.0 or area_mm2 > width_mm * length_mm:
+            raise ValueError(f"{context} area_mm2 必须位于平面面积范围内")
+
+
+def _validate_formal_gallery_record(record: dict[str, Any], context: str) -> None:
+    width_mm, length_mm = _formal_plane_dimensions(record, context)
+    slice_id = record.get("slice_id")
+    if not isinstance(slice_id, str) or not slice_id.strip():
+        raise ValueError(f"{context} slice_id 必须是非空字符串")
+    if record.get("status") != "gallery":
+        raise ValueError(f"{context} status 必须为 gallery")
+    features = record.get("features")
+    _validate_formal_features(
+        features,
+        width_mm=width_mm,
+        length_mm=length_mm,
+        context=context,
+    )
+    if not features:
+        raise ValueError(f"{context} gallery 记录必须至少包含一个血管特征")
+
+
+def _validate_formal_eus_record(
+    record: dict[str, Any], manifest_path: Path, context: str
+) -> None:
+    frame_id = record.get("frame_id")
+    if not isinstance(frame_id, str) or not frame_id.startswith("frame_"):
+        raise ValueError(f"{context} frame_id 必须是 frame_ 开头的帧号")
+    try:
+        int(frame_id.rsplit("_", 1)[1])
+    except (IndexError, ValueError) as error:
+        raise ValueError(f"{context} frame_id 必须包含数字后缀") from error
+    if manifest_path.parent.name != frame_id:
+        raise ValueError(f"{context} frame_id 必须与父目录一致")
+    expected_name = f"{frame_id}_cropped_gallery.jsonl"
+    if manifest_path.name != expected_name:
+        raise ValueError(f"{context} 文件名必须为 {expected_name}")
+    if record.get("slice_id") != f"{frame_id}_cropped":
+        raise ValueError(f"{context} slice_id 与 frame_id 不一致")
+    if record.get("pose_coordinate_system") != FORMAL_EUS_COORDINATE_SYSTEM:
+        raise ValueError(
+            f"{context} pose_coordinate_system 必须为 {FORMAL_EUS_COORDINATE_SYSTEM}"
+        )
+    if record.get("patient_world_pose") is not False:
+        raise ValueError(f"{context} patient_world_pose 必须为 false")
+    width_mm, length_mm = _formal_plane_dimensions(record, context)
+    status = record.get("status")
+    features = record.get("features")
+    _validate_formal_features(
+        features,
+        width_mm=width_mm,
+        length_mm=length_mm,
+        context=context,
+    )
+    if status not in {"gallery", "unindexed"}:
+        raise ValueError(f"{context} status 必须为 gallery 或 unindexed")
+    if status == "gallery" and not features:
+        raise ValueError(f"{context} status=gallery 时 features 不能为空")
+    if status == "unindexed" and features:
+        raise ValueError(f"{context} status=unindexed 时 features 必须为空")
+
+
 def load_gallery_database(
     manifest_path: str | Path,
     registration_module_path: str | Path,
     *,
     require_organ_labels: bool = True,
+    require_formal_contract: bool = False,
 ) -> GalleryDatabase:
     manifest_path = Path(manifest_path).resolve()
     if not manifest_path.is_file():
@@ -172,6 +298,8 @@ def load_gallery_database(
                 continue
             try:
                 record = json.loads(line)
+                if not isinstance(record, dict):
+                    raise ValueError("记录必须是 JSON 对象")
                 if "organ_labels" in record:
                     organ_labels = normalize_organ_labels(
                         record["organ_labels"],
@@ -181,6 +309,10 @@ def load_gallery_database(
                     raise ValueError("缺少 organ_labels")
                 else:
                     organ_labels = ()
+                if require_formal_contract:
+                    _validate_formal_gallery_record(
+                        record, f"{manifest_path.name} 第 {line_number} 行"
+                    )
                 feature_vector, rotation_error = _feature_vector_from_gallery_record(
                     record, module
                 )
@@ -249,6 +381,7 @@ def load_eus_queries(
     module: ModuleType,
     *,
     require_organ_labels: bool = True,
+    require_formal_contract: bool = False,
 ) -> list[QueryRecord]:
     eus_root = Path(eus_root).resolve()
     if not eus_root.is_dir():
@@ -269,6 +402,12 @@ def load_eus_queries(
             record = json.loads(lines[0])
             frame_id = str(record["frame_id"])
             numeric_frame_id = int(frame_id.rsplit("_", 1)[1])
+            if require_formal_contract:
+                _validate_formal_eus_record(
+                    record,
+                    manifest_path,
+                    f"EUS {manifest_path.name}",
+                )
             feature_vector = _query_feature_vector(record, module)
             organ_labels, organ_label_source, organ_label_source_path = (
                 _query_organ_labels(

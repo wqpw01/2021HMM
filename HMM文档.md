@@ -531,13 +531,18 @@ CT 图库约十万级记录，EUS 输入包含临床图像和人工标注，正�
 
 ### 5.1 输入之间的依赖关系
 
-本项目不接受“只有一张 EUS 图片”直接运行。完成检索至少需要三项：
+本项目不接受“只有一张 EUS 图片”直接运行。完成正式检索至少需要三项：
 
 ```text
 可加载的 registration/2021.py
   + 已建好的 CT gallery.jsonl
   + 已提取血管特征的 EUS 帧目录
 ```
+
+`run`、`validate` 和 `validate-eus` 使用正式输入契约：CT/EUS 局部平面必须为
+100 mm × 100 mm，EUS 必须声明 `pose_coordinate_system="synthetic_2d_10cm_crop"`
+和 `patient_world_pose=false`。这些输入由上游项目提供；本项目不会生成
+`*_cropped_gallery.jsonl`、重采样 CT 或调用 TotalSegmentator。
 
 器官过滤默认开启，所以 CT 记录必须有 `organ_labels`，EUS 必须能从 JSONL 或同帧
 TAR 获得器官集合。只有显式使用 `--organ-filter-mode off` 时，器官字段可以不提供。
@@ -580,6 +585,8 @@ TAR 获得器官集合。只有显式使用 `--organ-filter-mode off` 时，器�
 | `v_axis_world` | 3 floats | 始终 | 是 | 切面局部 v 轴 |
 | `normal_world` | 3 floats | 始终 | 是 | 与 u/v 组成旋转矩阵并参与欧拉角构造 |
 | `features` | list[object] | 始终且非空 | 是 | 动脉/静脉截面三元组 |
+| `width_mm`、`length_mm` | number | 正式运行始终 | 预检 | 必须为 100 mm × 100 mm |
+| `pixel_spacing_mm` | [number, number] | 正式运行始终 | 预检 | 二维平面的有效像素间距 |
 | `ct_png` | string | 可选 | 否 | 复制到候选 JSON，当前三联图不读取 |
 | `boundary_only_png` | string | 可选 | 否 | 复制到候选 JSON，当前三联图不读取 |
 | `ct_overlay_png` | string | 可选 | 可视化 | 复制到候选 JSON，并由三联图读取；缺失时显示占位信息 |
@@ -602,6 +609,9 @@ TAR 获得器官集合。只有显式使用 `--organ-filter-mode off` 时，器�
   "u_axis_world": [1.0, 0.0, 0.0],
   "v_axis_world": [0.0, 1.0, 0.0],
   "normal_world": [0.0, 0.0, 1.0],
+  "width_mm": 100.0,
+  "length_mm": 100.0,
+  "pixel_spacing_mm": [0.3344481605, 0.3344481605],
   "features": [
     {
       "label": "artery",
@@ -660,6 +670,11 @@ TAR 获得器官集合。只有显式使用 `--organ-filter-mode off` 时，器�
 非空 JSON 记录。加载后按 `frame_id` 最后一段数字排序，例如 73 在 273 前面；
 不依赖文件系统遍历顺序。
 
+正式运行还要求文件名、父目录和 `frame_id` 一致，`slice_id` 为
+`<frame>_cropped`；`status=gallery` 必须有非空 `features`，
+`status=unindexed` 必须为空。特征标签限为 `artery`/`vein`，`x_mm/y_mm` 必须
+位于 100 mm 平面内。
+
 ### 5.7 EUS JSONL 示例
 
 ```json
@@ -676,6 +691,11 @@ TAR 获得器官集合。只有显式使用 `--organ-filter-mode off` 时，器�
       "area_mm2": 18.7
     }
   ],
+  "width_mm": 100.0,
+  "length_mm": 100.0,
+  "pixel_spacing_mm": [0.1042752868, 0.1042752868],
+  "pose_coordinate_system": "synthetic_2d_10cm_crop",
+  "patient_world_pose": false,
   "ct_overlay_png": "frame_00000073_cropped_overlay.png"
 }
 ```
@@ -819,6 +839,9 @@ frame_00000300,0.050
 | `--sigma-z` | 3.0 | 3.0 | mm | 上一切面法向位移尺度 |
 | `--sigma-theta` | 2.0 | 2.0 | degree | 相邻法向夹角尺度 |
 | `--timestamps-csv` | 无 | 无 | second | 可选真实帧时间戳 |
+
+`--k` 和 `--search-range` 是可调的检索参数，不会被正式流程锁死；所有覆盖值和
+HMM 参数都会写入该次运行的 `run_metadata.json`。
 
 ### 5.15 参数的四种口径
 
@@ -1595,7 +1618,8 @@ hmm_distance
 - `2021.py` 实际路径、修正文件哈希和原始文件哈希；
 - CT gallery 路径与 SHA-256；
 - EUS 根目录、所有 EUS JSONL 聚合哈希、器官来源聚合哈希；
-- 时间戳文件或 null；
+- 时间戳文件路径与 SHA-256，未提供时均为 null；
+- `workflow_contract` 和正式 CT/EUS 坐标输入契约；
 - K、r、器官模式、N 和 sigma；
 - 假设列表；
 - CT/EUS 标签、器官、状态、窗口和回退统计；
@@ -1776,6 +1800,20 @@ python run_reproduction.py run \
   --sigma-z 3.0 \
   --sigma-theta 2.0
 ```
+
+例如只改变检索候选数量和标签数量容差：
+
+```bash
+python run_reproduction.py run \
+  --gallery-jsonl "$CT_GALLERY_JSONL" \
+  --eus-root "$EUS_ROOT" \
+  --output-dir "$OUTPUT_DIR_K100_R1" \
+  --k 100 \
+  --search-range 1
+```
+
+默认值仍是上次实验的 `K=200`、`r=2`、`N=6` 和
+`sigma_x/sigma_y/sigma_z/sigma_theta=0.6/0.6/3.0/2.0`。
 
 建议给输出目录加 UTC 时间或版本号，且不要指向已有结果目录。
 

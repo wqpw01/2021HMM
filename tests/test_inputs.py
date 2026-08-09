@@ -15,6 +15,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REGISTRATION_MODULE = PROJECT_ROOT / "registration" / "2021.py"
 
 
+def formal_plane_fields() -> dict:
+    return {
+        "width_mm": 100.0,
+        "length_mm": 100.0,
+        "pixel_spacing_mm": [100.0 / 959.0, 100.0 / 959.0],
+        "pose_coordinate_system": "synthetic_2d_10cm_crop",
+        "patient_world_pose": False,
+    }
+
+
 def gallery_record(slice_id: str = "slice-001") -> dict:
     return {
         "frame_id": "case_2",
@@ -33,6 +43,7 @@ def gallery_record(slice_id: str = "slice-001") -> dict:
             {"label": "artery", "x_mm": 12.0, "y_mm": 18.0, "area_mm2": 3.5},
             {"label": "vein", "x_mm": 30.0, "y_mm": 40.0, "area_mm2": 5.0},
         ],
+        **formal_plane_fields(),
     }
 
 
@@ -143,6 +154,7 @@ def test_load_eus_queries_falls_back_to_active_organ_polygons_in_tar(tmp_path: P
         "slice_id": f"{frame_id}_cropped",
         "status": "gallery",
         "features": gallery_record()["features"][:1],
+        **formal_plane_fields(),
     }
     write_jsonl(frame_root / f"{frame_id}_cropped_gallery.jsonl", [record])
     write_annotation_tar(
@@ -150,7 +162,9 @@ def test_load_eus_queries_falls_back_to_active_organ_polygons_in_tar(tmp_path: P
         [polygon(15), polygon(24)],
     )
 
-    query = inputs.load_eus_queries(tmp_path / "eus", gallery.module)[0]
+    query = inputs.load_eus_queries(
+        tmp_path / "eus", gallery.module, require_formal_contract=True
+    )[0]
 
     assert query.organ_labels == ("gallbladder", "kidney_left")
     assert query.organ_label_source == "tar_active_polygons"
@@ -171,9 +185,11 @@ def test_explicit_eus_organ_labels_take_precedence_over_tar(tmp_path: Path):
         [
             {
                 "frame_id": frame_id,
+                "slice_id": f"{frame_id}_cropped",
                 "status": "gallery",
                 "features": gallery_record()["features"][:1],
                 "organ_labels": ["spleen"],
+                **formal_plane_fields(),
             }
         ],
     )
@@ -181,7 +197,9 @@ def test_explicit_eus_organ_labels_take_precedence_over_tar(tmp_path: Path):
         frame_root / f"{frame_id}_cropped_jpg_Label.tar", [polygon(15)]
     )
 
-    query = inputs.load_eus_queries(tmp_path / "eus", gallery.module)[0]
+    query = inputs.load_eus_queries(
+        tmp_path / "eus", gallery.module, require_formal_contract=True
+    )[0]
 
     assert query.organ_labels == ("spleen",)
     assert query.organ_label_source == "jsonl"
@@ -212,6 +230,170 @@ def test_eus_organ_metadata_is_required_when_filtering_is_enabled(tmp_path: Path
     )[0]
     assert query.organ_labels == ()
     assert query.organ_label_source == "unavailable"
+
+
+def test_formal_contract_accepts_shared_100mm_ct_and_eus_records(tmp_path: Path):
+    inputs = importlib.import_module("ramalhinho2021.inputs")
+    gallery_record_value = gallery_record()
+    gallery_record_value.update(formal_plane_fields())
+    gallery_manifest = tmp_path / "gallery" / "gallery.jsonl"
+    write_jsonl(gallery_manifest, [gallery_record_value])
+    gallery = inputs.load_gallery_database(
+        gallery_manifest,
+        REGISTRATION_MODULE,
+        require_formal_contract=True,
+    )
+
+    frame_id = "frame_00000001"
+    query_record = {
+        "frame_id": frame_id,
+        "slice_id": f"{frame_id}_cropped",
+        "status": "gallery",
+        "features": gallery_record_value["features"][:1],
+        "organ_labels": ["liver"],
+        **formal_plane_fields(),
+    }
+    write_jsonl(
+        tmp_path / "eus" / frame_id / f"{frame_id}_cropped_gallery.jsonl",
+        [query_record],
+    )
+
+    queries = inputs.load_eus_queries(
+        tmp_path / "eus",
+        gallery.module,
+        require_formal_contract=True,
+    )
+
+    assert queries[0].feature_vector is not None
+
+
+def test_formal_contract_rejects_patient_world_eus_pose(tmp_path: Path):
+    inputs = importlib.import_module("ramalhinho2021.inputs")
+    gallery = inputs.load_gallery_database(
+        _write_one_gallery(tmp_path / "gallery"), REGISTRATION_MODULE
+    )
+    frame_id = "frame_00000001"
+    record = {
+        "frame_id": frame_id,
+        "slice_id": f"{frame_id}_cropped",
+        "status": "gallery",
+        "features": gallery_record()["features"][:1],
+        "organ_labels": ["liver"],
+        **formal_plane_fields(),
+        "patient_world_pose": True,
+    }
+    write_jsonl(
+        tmp_path / "eus" / frame_id / f"{frame_id}_cropped_gallery.jsonl",
+        [record],
+    )
+
+    with pytest.raises(ValueError, match="patient_world_pose 必须为 false"):
+        inputs.load_eus_queries(
+            tmp_path / "eus",
+            gallery.module,
+            require_formal_contract=True,
+        )
+
+
+def test_formal_contract_rejects_inconsistent_status_and_features(tmp_path: Path):
+    inputs = importlib.import_module("ramalhinho2021.inputs")
+    gallery = inputs.load_gallery_database(
+        _write_one_gallery(tmp_path / "gallery"), REGISTRATION_MODULE
+    )
+    frame_id = "frame_00000001"
+    record = {
+        "frame_id": frame_id,
+        "slice_id": f"{frame_id}_cropped",
+        "status": "unindexed",
+        "features": gallery_record()["features"][:1],
+        "organ_labels": ["liver"],
+        **formal_plane_fields(),
+    }
+    write_jsonl(
+        tmp_path / "eus" / frame_id / f"{frame_id}_cropped_gallery.jsonl",
+        [record],
+    )
+
+    with pytest.raises(ValueError, match="status=unindexed 时 features 必须为空"):
+        inputs.load_eus_queries(
+            tmp_path / "eus",
+            gallery.module,
+            require_formal_contract=True,
+        )
+
+
+def test_formal_contract_rejects_out_of_plane_eus_centroid(tmp_path: Path):
+    inputs = importlib.import_module("ramalhinho2021.inputs")
+    gallery = inputs.load_gallery_database(
+        _write_one_gallery(tmp_path / "gallery"), REGISTRATION_MODULE
+    )
+    frame_id = "frame_00000001"
+    feature = dict(gallery_record()["features"][0])
+    feature["x_mm"] = 100.1
+    record = {
+        "frame_id": frame_id,
+        "slice_id": f"{frame_id}_cropped",
+        "status": "gallery",
+        "features": [feature],
+        "organ_labels": ["liver"],
+        **formal_plane_fields(),
+    }
+    write_jsonl(
+        tmp_path / "eus" / frame_id / f"{frame_id}_cropped_gallery.jsonl",
+        [record],
+    )
+
+    with pytest.raises(ValueError, match="x_mm/y_mm 必须位于 100 mm 平面内"):
+        inputs.load_eus_queries(
+            tmp_path / "eus",
+            gallery.module,
+            require_formal_contract=True,
+        )
+
+
+def test_formal_contract_rejects_non_100mm_ct_plane(tmp_path: Path):
+    inputs = importlib.import_module("ramalhinho2021.inputs")
+    record = gallery_record()
+    record.update(formal_plane_fields())
+    record["width_mm"] = 80.0
+    manifest = tmp_path / "gallery.jsonl"
+    write_jsonl(manifest, [record])
+
+    with pytest.raises(ValueError, match=r"gallery\.jsonl.*100 mm"):
+        inputs.load_gallery_database(
+            manifest,
+            REGISTRATION_MODULE,
+            require_formal_contract=True,
+        )
+
+
+def test_formal_contract_rejects_missing_ct_slice_id(tmp_path: Path):
+    inputs = importlib.import_module("ramalhinho2021.inputs")
+    record = gallery_record()
+    record.pop("slice_id")
+    manifest = tmp_path / "gallery.jsonl"
+    write_jsonl(manifest, [record])
+
+    with pytest.raises(ValueError, match="slice_id 必须是非空字符串"):
+        inputs.load_gallery_database(
+            manifest,
+            REGISTRATION_MODULE,
+            require_formal_contract=True,
+        )
+
+
+def test_formal_contract_rejects_non_object_ct_record(tmp_path: Path):
+    inputs = importlib.import_module("ramalhinho2021.inputs")
+    manifest = tmp_path / "gallery.jsonl"
+    write_jsonl(manifest, [[]])
+
+    with pytest.raises(ValueError, match="记录必须是 JSON 对象"):
+        inputs.load_gallery_database(
+            manifest,
+            REGISTRATION_MODULE,
+            require_organ_labels=False,
+            require_formal_contract=True,
+        )
 
 
 def _write_one_gallery(root: Path) -> Path:

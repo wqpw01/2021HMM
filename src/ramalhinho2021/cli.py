@@ -5,10 +5,15 @@ from collections import Counter
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any
 
 from .inputs import (
+    FORMAL_EUS_COORDINATE_SYSTEM,
+    FORMAL_PLANE_LENGTH_MM,
+    FORMAL_PLANE_WIDTH_MM,
+    FORMAL_VESSEL_LABELS,
     GalleryDatabase,
     QueryRecord,
     load_eus_queries,
@@ -29,6 +34,7 @@ DEFAULT_REGISTRATION_MODULE = PROJECT_ROOT / "registration" / "2021.py"
 ORIGINAL_REGISTRATION_SHA256 = (
     "cd60f299d30d8cb9cfdf63820ed4b092e45df67ec1a7bcc69bdf960b43e1171b"
 )
+FORMAL_WORKFLOW_CONTRACT = "ramalhinho2021-formal-run/v1"
 
 
 def sha256_file(path: str | Path) -> str:
@@ -162,8 +168,8 @@ def _nonnegative_int(value: str) -> int:
 
 def _positive_float(value: str) -> float:
     parsed = float(value)
-    if parsed <= 0.0:
-        raise argparse.ArgumentTypeError("必须大于 0")
+    if not math.isfinite(parsed) or parsed <= 0.0:
+        raise argparse.ArgumentTypeError("必须是有限且大于 0 的数值")
     return parsed
 
 
@@ -228,6 +234,7 @@ def _validate_eus_command(args: argparse.Namespace) -> int:
         args.eus_root,
         module,
         require_organ_labels=args.organ_filter_mode != "off",
+        require_formal_contract=True,
     )
     print(json.dumps(summarize_eus(queries), ensure_ascii=False, indent=2))
     return 0
@@ -239,11 +246,13 @@ def _load_inputs(args: argparse.Namespace) -> tuple[GalleryDatabase, list[QueryR
         args.gallery_jsonl,
         args.registration_module,
         require_organ_labels=require_organ_labels,
+        require_formal_contract=True,
     )
     queries = load_eus_queries(
         args.eus_root,
         gallery.module,
         require_organ_labels=require_organ_labels,
+        require_formal_contract=True,
     )
     return gallery, queries
 
@@ -276,6 +285,11 @@ def _run_command(args: argparse.Namespace) -> int:
     )
     print(
         f"已加载 {len(gallery.features)} 个 CT 候选和 {len(queries)} 个 EUS 帧。",
+        flush=True,
+    )
+    print(
+        f"检索参数: K={args.k}, r={args.search_range}; "
+        f"HMM 窗口={args.hmm_window_size}。",
         flush=True,
     )
     single_results = run_single_frame_retrieval(
@@ -319,6 +333,7 @@ def _run_command(args: argparse.Namespace) -> int:
         "timestamps_csv" if timestamps_by_frame is not None else "equal_unit_intervals"
     )
     metadata = {
+        "workflow_contract": FORMAL_WORKFLOW_CONTRACT,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "mode": "organ_overlap_prefilter_then_vascular_cbir"
         if args.organ_filter_mode == "overlap"
@@ -334,6 +349,9 @@ def _run_command(args: argparse.Namespace) -> int:
         "timestamps_csv": str(Path(args.timestamps_csv).resolve())
         if args.timestamps_csv
         else None,
+        "timestamps_csv_sha256": sha256_file(args.timestamps_csv)
+        if args.timestamps_csv
+        else None,
         "parameters": {
             "search_range": args.search_range,
             "k": args.k,
@@ -347,6 +365,16 @@ def _run_command(args: argparse.Namespace) -> int:
             "hmm_sigma_theta": args.sigma_theta,
             "hmm_window_size": args.hmm_window_size,
             "timestamp_mode": timestamp_mode,
+        },
+        "input_contract": {
+            "ct_plane_width_mm": FORMAL_PLANE_WIDTH_MM,
+            "ct_plane_length_mm": FORMAL_PLANE_LENGTH_MM,
+            "eus_plane_width_mm": FORMAL_PLANE_WIDTH_MM,
+            "eus_plane_length_mm": FORMAL_PLANE_LENGTH_MM,
+            "eus_coordinate_system": FORMAL_EUS_COORDINATE_SYSTEM,
+            "eus_patient_world_pose": False,
+            "vessel_labels": sorted(FORMAL_VESSEL_LABELS),
+            "organ_label_resolution": "jsonl_priority_then_tar_fallback",
         },
         "assumptions": [
             "EUS frames are ordered by ascending numeric frame ID.",

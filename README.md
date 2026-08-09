@@ -23,7 +23,9 @@ Windows 资源管理器路径：
 \\wsl.localhost\Ubuntu\home\zyt\ramalhinho_2021_local_reproduction
 ```
 
-数据不会复制进项目。EUS 目录和未来取得的 `gallery.jsonl` 均通过命令行传入。
+数据不会复制进项目。CT `gallery.jsonl` 和 EUS 裁剪特征目录都是外部输入；本项目
+不生成 `*_cropped_gallery.jsonl`，也不执行 CT 建库、分割或 TotalSegmentator。
+唯一正式执行入口是下面的 `run` 子命令。
 
 ## 关键配置
 
@@ -84,6 +86,8 @@ case_2/gallery/gallery.jsonl
 - `center_world`；
 - `u_axis_world`、`v_axis_world`、`normal_world`；
 - `features`，每项包含 `label、x_mm、y_mm、area_mm2`；
+- `width_mm=100.0`、`length_mm=100.0` 和正的 `pixel_spacing_mm`；
+- 每个特征的标签只能是 `artery` 或 `vein`，质心必须位于 100 mm × 100 mm 平面内；
 - 可选的 `ct_overlay_png` 等相对图片路径。
 
 三条方向轴必须是有限、正交、单位化且构成右手坐标系。图片路径相对于
@@ -103,6 +107,12 @@ EUS 根目录按下列形式组织：
 
 项目按帧号末尾数字升序加载。`status="gallery"` 且 `features` 非空的帧参与
 检索；`unindexed` 帧保留在报告中，并切断 HMM 连续序列。
+
+正式 `run`/`validate` 会额外强制检查每个 EUS JSONL：文件必须与父目录和
+`frame_id` 同名，`slice_id` 必须为 `<frame>_cropped`；必须声明
+`pose_coordinate_system="synthetic_2d_10cm_crop"`、`patient_world_pose=false`、
+100×100 mm 平面和有效 `pixel_spacing_mm`。EUS 的 `x_mm/y_mm` 采用左上角原点、
+x 向右、y 向下的二维局部毫米坐标。
 
 器官信息按以下顺序读取：
 
@@ -138,7 +148,7 @@ frame_00000273,0.025
 
 ```bash
 python run_reproduction.py validate-eus \
-  --eus-root '/mnt/c/Users/zhangyutang/Desktop/交付文件2026.7.25/EUS标注与特征'
+  --eus-root '/mnt/c/Users/zhangyutang/Desktop/交付宋老师文件2026.7.25/EUS标注与特征'
 ```
 
 联合检查真实 `gallery.jsonl` 与 EUS 时，运行：
@@ -157,6 +167,24 @@ python run_reproduction.py run \
   --eus-root '/path/to/EUS标注与特征' \
   --output-dir '/path/to/results'
 ```
+
+默认值复现已完成实验（`K=200`、`r=2`、六帧 HMM、`sigma=0.6/0.6/3.0/2.0`）。
+检索和 HMM 参数可在同一个正式入口覆盖，例如：
+
+```bash
+python run_reproduction.py run \
+  --gallery-jsonl '/path/to/case_2/gallery/gallery.jsonl' \
+  --eus-root '/path/to/EUS标注与特征' \
+  --output-dir '/path/to/results-k100-r1' \
+  --k 100 \
+  --search-range 1 \
+  --hmm-window-size 6 \
+  --sigma-x 0.6 --sigma-y 0.6 --sigma-z 3.0 --sigma-theta 2.0
+```
+
+可覆盖的检索参数是 `--k`、`--search-range`；连续流程参数是
+`--hmm-window-size`、四个 `--sigma-*`、`--timestamps-csv` 和
+`--organ-filter-mode`。实际值会写入 `run_metadata.json` 的 `parameters`。
 
 显式复现旧版、不使用器官预筛选的全库血管基线：
 
@@ -198,7 +226,8 @@ results/
   HMM 选中项；
 - `single_frame_summary.csv`：便于表格查看的 Top-1 与 HMM 摘要；
 - `hmm_diagnostic_windows.jsonl`：每个六帧窗口、时间戳、路径和转移代价；
-- `run_metadata.json`：输入哈希、参数、统计、假设和姿态恢复误差；
+- `run_metadata.json`：CT/EUS/可选时间戳输入哈希、`workflow_contract`、坐标输入
+  契约、实际参数、统计、假设和姿态恢复误差；
 - `visualizations`：EUS、单帧 Top-1、HMM 结果三联图。
 
 ## 事实边界

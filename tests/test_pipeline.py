@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from .test_inputs import gallery_record, write_jsonl
+from .test_inputs import formal_plane_fields, gallery_record, write_jsonl
 
 
 def test_build_hmm_windows_uses_six_frames_and_tail_anchors(tmp_path: Path):
@@ -329,6 +329,7 @@ def _make_queries(
                     "status": status,
                     "features": features,
                     "organ_labels": ["liver"],
+                    **formal_plane_fields(),
                 }
             ],
         )

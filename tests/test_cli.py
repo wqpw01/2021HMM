@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
+from .test_inputs import formal_plane_fields
 from .test_pipeline import _make_queries, _write_gallery
 
 
@@ -35,6 +39,8 @@ def test_run_command_executes_synthetic_end_to_end(tmp_path: Path):
             str(output_dir),
             "--k",
             "2",
+            "--search-range",
+            "0",
         ],
         cwd=PROJECT_ROOT,
         capture_output=True,
@@ -44,9 +50,10 @@ def test_run_command_executes_synthetic_end_to_end(tmp_path: Path):
 
     assert completed.returncode == 0, completed.stderr
     metadata = json.loads((output_dir / "run_metadata.json").read_text("utf-8"))
+    assert metadata["workflow_contract"] == "ramalhinho2021-formal-run/v1"
     assert metadata["mode"] == "organ_overlap_prefilter_then_vascular_cbir"
     assert metadata["parameters"] == {
-        "search_range": 2,
+        "search_range": 0,
         "k": 2,
         "organ_filter_mode": "overlap",
         "organ_match_rule": "any_overlap",
@@ -61,6 +68,7 @@ def test_run_command_executes_synthetic_end_to_end(tmp_path: Path):
     assert metadata["input_checks"]["query_frame_count"] == 6
     assert metadata["input_checks"]["filtered_query_count"] == 6
     assert metadata["input_checks"]["query_organ_source_counts"] == {"jsonl": 6}
+    assert "检索参数: K=2, r=0" in completed.stdout
     assert "完成" in completed.stdout
 
 
@@ -159,6 +167,152 @@ def test_missing_gallery_fails_before_creating_output(tmp_path: Path):
     assert not output_dir.exists()
 
 
+def test_run_rejects_invalid_formal_eus_contract_before_creating_output(
+    tmp_path: Path,
+):
+    from .test_inputs import write_jsonl
+
+    inputs = __import__("ramalhinho2021.inputs", fromlist=["load_registration_module"])
+    manifest = _write_gallery(tmp_path / "case_2" / "gallery", count=1)
+    module = inputs.load_registration_module(PROJECT_ROOT / "registration" / "2021.py")
+    eus_root = tmp_path / "eus"
+    _make_queries(eus_root, module, count=6)
+    frame_id = "frame_00000000"
+    eus_manifest = eus_root / frame_id / f"{frame_id}_cropped_gallery.jsonl"
+    record = json.loads(eus_manifest.read_text("utf-8"))
+    record["patient_world_pose"] = True
+    write_jsonl(eus_manifest, [record])
+    output_dir = tmp_path / "results"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(RUNNER),
+            "run",
+            "--gallery-jsonl",
+            str(manifest),
+            "--eus-root",
+            str(eus_root),
+            "--output-dir",
+            str(output_dir),
+            "--k",
+            "1",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "patient_world_pose 必须为 false" in completed.stderr
+    assert not output_dir.exists()
+
+
+def test_run_rejects_missing_ct_slice_id_before_creating_output(tmp_path: Path):
+    from .test_inputs import gallery_record, write_jsonl
+
+    inputs = __import__("ramalhinho2021.inputs", fromlist=["load_registration_module"])
+    gallery = gallery_record()
+    gallery.pop("slice_id")
+    manifest = tmp_path / "gallery" / "gallery.jsonl"
+    write_jsonl(manifest, [gallery])
+    module = inputs.load_registration_module(PROJECT_ROOT / "registration" / "2021.py")
+    eus_root = tmp_path / "eus"
+    _make_queries(eus_root, module, count=6)
+    output_dir = tmp_path / "results"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(RUNNER),
+            "run",
+            "--gallery-jsonl",
+            str(manifest),
+            "--eus-root",
+            str(eus_root),
+            "--output-dir",
+            str(output_dir),
+            "--k",
+            "1",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "slice_id 必须是非空字符串" in completed.stderr
+    assert not output_dir.exists()
+
+
+def test_run_records_timestamp_file_hash(tmp_path: Path):
+    inputs = __import__("ramalhinho2021.inputs", fromlist=["load_gallery_database"])
+    manifest = _write_gallery(tmp_path / "gallery", count=1)
+    gallery = inputs.load_gallery_database(
+        manifest, PROJECT_ROOT / "registration" / "2021.py"
+    )
+    eus_root = tmp_path / "eus"
+    _make_queries(eus_root, gallery.module, count=6)
+    timestamps_csv = tmp_path / "timestamps.csv"
+    timestamps_csv.write_text(
+        "frame_id,timestamp_seconds\n"
+        + "".join(
+            f"frame_{index:08d},{index * 0.025}\n" for index in range(6)
+        ),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "results"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(RUNNER),
+            "run",
+            "--gallery-jsonl",
+            str(manifest),
+            "--eus-root",
+            str(eus_root),
+            "--output-dir",
+            str(output_dir),
+            "--timestamps-csv",
+            str(timestamps_csv),
+            "--k",
+            "1",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    metadata = json.loads((output_dir / "run_metadata.json").read_text("utf-8"))
+    assert metadata["timestamps_csv_sha256"] == hashlib.sha256(
+        timestamps_csv.read_bytes()
+    ).hexdigest()
+
+
+def test_run_parser_rejects_nonfinite_sigma():
+    cli = __import__("ramalhinho2021.cli", fromlist=["build_parser"])
+
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(
+            [
+                "run",
+                "--gallery-jsonl",
+                "gallery.jsonl",
+                "--eus-root",
+                "eus",
+                "--output-dir",
+                "results",
+                "--sigma-x",
+                "nan",
+            ]
+        )
+
+
 def test_organ_filter_off_accepts_legacy_inputs_without_organ_metadata(
     tmp_path: Path,
 ):
@@ -178,6 +332,7 @@ def test_organ_filter_off_accepts_legacy_inputs_without_organ_metadata(
                 "slice_id": f"{frame_id}_cropped",
                 "status": "gallery",
                 "features": gallery["features"],
+                **formal_plane_fields(),
             }
         ],
     )
